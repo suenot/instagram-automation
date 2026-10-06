@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "instagram-automation"
+version = "0.1.0"
+description = "Idempotent Instagram publisher through persistent Camoufox"
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+  "camoufox==0.5.7",
+  "playwright==1.60.0",
+  "pillow==11.3.0",
+  "metadata-automation @ git+ssh://git@gitlab.com/reforms-lab/metadata-automation.git@a862f19a08f84d051f8359a0a760ab394cb47d33",
+]
+
+[project.scripts]
+igpub = "instagram_automation.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/instagram_automation"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[dependency-groups]
+dev = ["pytest==8.4.2", "pytest-asyncio==1.2.0"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
