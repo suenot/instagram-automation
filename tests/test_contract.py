@@ -90,17 +90,20 @@ def test_json_stdout(flags, code, tmp_path, monkeypatch, capsys):
     assert isinstance(json.loads(output), dict)
 
 
-def test_caption_preserved_and_complete_metadata_required(tmp_path):
+@pytest.mark.parametrize("schema_version", ["1.0.0", "2.0.0"])
+def test_caption_preserved_and_complete_metadata_required(tmp_path, schema_version):
     from metadata_automation import generate
     caption = tmp_path / "caption.txt"
     caption.write_bytes(b"  Exact\r\nCaption #tag\n")
     assert read_caption(caption_file=str(caption)) == "  Exact\r\nCaption #tag\n"
-    envelope = generate({"language": "en", "title": "A title", "summary": "Exact caption", "keywords": ["tag"]})
+    envelope = generate({"language": "en", "title": "A title", "summary": "Exact caption", "keywords": ["tag"]},
+                        schema_version=schema_version)
+    envelope["platforms"]["instagram"]["caption"] = "  Exact\r\nCaption #tag\n"
     metadata = tmp_path / "metadata.json"
     metadata.write_text(json.dumps(envelope))
-    assert read_caption(metadata_file=str(metadata)) == envelope["platforms"]["instagram"]["caption"]
-    for mutate in (lambda data: data["platforms"].pop("youtube"),
-                   lambda data: data.update(schema_version="2.0.0"),
+    assert read_caption(metadata_file=str(metadata)) == "  Exact\r\nCaption #tag\n"
+    for mutate in (lambda data: data["platforms"].pop("pinterest" if schema_version == "2.0.0" else "youtube"),
+                   lambda data: data.update(schema_version="3.0.0"),
                    lambda data: data.update(privacy="public")):
         invalid = deepcopy(envelope)
         mutate(invalid)

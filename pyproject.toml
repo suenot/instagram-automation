@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "instagram-automation"
-version = "0.1.0"
+version = "0.1.1"
 description = "Idempotent Instagram publisher through persistent Camoufox"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
@@ -12,7 +12,7 @@ dependencies = [
   "camoufox==0.5.7",
   "playwright==1.60.0",
   "pillow==11.3.0",
-  "metadata-automation @ git+ssh://git@gitlab.com/reforms-lab/metadata-automation.git@a862f19a08f84d051f8359a0a760ab394cb47d33",
+  "metadata-automation @ git+ssh://git@gitlab.com/reforms-lab/metadata-automation.git@994ecce4c904c9c1a7f5de9086ef2a9785c25efa",
 ]
 
 [project.scripts]

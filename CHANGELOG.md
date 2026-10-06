@@ -4,6 +4,12 @@ All notable changes to this project are documented here. The format follows Keep
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-06
+
+### Fixed
+
+- Pin metadata-automation `0.2.0` to accept complete schema `2.0.0` envelopes with ten platforms, including Pinterest, while preserving `1.0.0` support and exact Instagram captions.
+
 ## [0.1.0] - 2026-10-06
 
 ### Added

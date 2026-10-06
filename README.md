@@ -25,7 +25,7 @@ uv run igpub login --account caribbean --state-dir "$PWD/.local/igpub"
 uv run igpub accounts list --state-dir "$PWD/.local/igpub"
 ```
 
-Dependencies are locked: Camoufox `0.5.7`, Playwright `1.60.0`, and metadata-automation commit `a862f19a08f84d051f8359a0a760ab394cb47d33`. Record and test the downloaded browser version with this Python dependency pair on each target OS before release. [Camoufox usage](https://camoufox.com/python/usage/) documents persistent contexts and Linux virtual display mode; controls use [Playwright locators](https://playwright.dev/python/docs/locators).
+Dependencies are locked: Camoufox `0.5.7`, Playwright `1.60.0`, and metadata-automation `0.2.0` at commit `994ecce4c904c9c1a7f5de9086ef2a9785c25efa`. Record and test the downloaded browser version with this Python dependency pair on each target OS before release. [Camoufox usage](https://camoufox.com/python/usage/) documents persistent contexts and Linux virtual display mode; controls use [Playwright locators](https://playwright.dev/python/docs/locators).
 
 The macOS controlled smoke used the already installed paired `official/156.0.1-beta.34` executable, pinned fpgen model verified by Camoufox's own hashes, and fresh temporary profiles. Set `CAMOUFOX_EXECUTABLE_PATH` to select an already installed paired executable explicitly. This validates the wrapper and controlled fixtures; the default fetch/cache selection, Linux environment and live Instagram still need their own checks.
 
@@ -58,7 +58,7 @@ uv run igpub status --account caribbean --request-id campaign-2026-10-06-001 \
   --state-dir "$PWD/.local/igpub"
 ```
 
-Exactly one caption input is required: `--caption`, UTF-8 `--caption-file`, or complete `--metadata-file`. Metadata uses the pinned dependency's bundled schema, exact schema version `1.0.0`, and all nine platform blocks. Only `platforms.instagram.caption` reaches the editor, verbatim; hashtags are never appended again. Caption files preserve whitespace and line endings. The editor value must match before Share.
+Exactly one caption input is required: `--caption`, UTF-8 `--caption-file`, or complete `--metadata-file`. Metadata uses the pinned dependency's bundled schemas: version `1.0.0` requires all nine platform blocks; version `2.0.0` requires all ten, including Pinterest. The same complete `2.0.0` file is also accepted by the Facebook and TikTok CLIs using this dependency. Only `platforms.instagram.caption` reaches the editor, verbatim; hashtags are never appended again. Caption files preserve whitespace and line endings. The editor value must match before Share.
 
 Instagram post privacy follows the selected account's current privacy. No per-post audience selector is supported by this CLI; metadata cannot configure account privacy. Check the account privacy before publishing. Public accessibility verification applies only to public accounts. Reel source media must be vertical 9:16: the adapter explicitly selects the observed 9:16 crop option and checks intrinsic video dimensions plus the actual visible frame, including clipping ancestors, before Share. A square preview is rejected. Music and tagging are not automated.
 
