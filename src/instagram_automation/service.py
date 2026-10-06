@@ -3,11 +3,13 @@ import hashlib
 import json
 from contextlib import contextmanager
 from pathlib import Path
+import shutil
 import sys
 from tempfile import TemporaryDirectory
 
 from .browser import InstagramEditor, browser_session, identity, verify_account
 from .errors import PublishError
+from .firefox_cookies import firefox_cookies
 from .media import read_caption, snapshot, source_name, validate_media
 from .state import State, canonical, result
 
@@ -129,29 +131,103 @@ async def publish(state: State, args, session_factory=browser_session, adapter_f
             return result(state.get(args.account, args.request_id)), 0
 
 
-async def login(state: State, args):
-    if not sys.stdin.isatty():
+async def login(state: State, args, session_factory=None):
+    session_factory = browser_session if session_factory is None else session_factory
+    imported = getattr(args, "import_firefox", None)
+    if not imported and not sys.stdin.isatty():
         raise PublishError("INTERACTIVE_LOGIN_REQUIRED", "Visible login requires an interactive terminal.")
     with state.lock(args.account):
-        async with asyncio.timeout(args.timeout_seconds):
-            async with browser_session(state.profile(args.account), False) as context:
-                page = await context.new_page()
-                await page.goto("https://www.instagram.com/accounts/login/", wait_until="domcontentloaded")
-                print("Sign in to @caribbeanawesome (Caribbean Awesome), finish 2FA, then press Enter here.", file=sys.stderr)
-                loop = asyncio.get_running_loop()
-                ready = loop.create_future()
-                def entered():
-                    if not ready.done():
-                        ready.set_result(sys.stdin.readline())
-                loop.add_reader(sys.stdin, entered)
-                try:
-                    if not await ready:
-                        raise PublishError("INTERACTIVE_LOGIN_REQUIRED", "Terminal input closed before account verification.")
-                finally:
-                    loop.remove_reader(sys.stdin)
-                handle, display = await identity(context)
-                state.bind(args.account, handle, display)
+        profile = state.profile(args.account)
+        cookies = None
+        if imported:
+            if any(profile.iterdir()):
+                raise PublishError("FIREFOX_IMPORT_CONFLICT", "Import requires an unused Camoufox profile; renew an existing session through visible login and keep its journal.")
+            cookies = firefox_cookies(imported)
+        try:
+            async with asyncio.timeout(args.timeout_seconds):
+                async with session_factory(profile, False) as context:
+                    try:
+                        if cookies is not None:
+                            try:
+                                await context.add_cookies(cookies)
+                            except Exception:
+                                raise PublishError("FIREFOX_COOKIE_IMPORT_FAILED", "Camoufox could not accept the Firefox cookie snapshot; no account was bound.") from None
+                        else:
+                            page = await context.new_page()
+                            await page.goto("https://www.instagram.com/accounts/login/", wait_until="domcontentloaded")
+                            print("Sign in to @caribbeanawesome (Caribbean Awesome), finish 2FA, then press Enter here.", file=sys.stderr)
+                            loop = asyncio.get_running_loop()
+                            ready = loop.create_future()
+                            def entered():
+                                if not ready.done():
+                                    ready.set_result(sys.stdin.readline())
+                            loop.add_reader(sys.stdin, entered)
+                            try:
+                                if not await ready:
+                                    raise PublishError("INTERACTIVE_LOGIN_REQUIRED", "Terminal input closed before account verification.")
+                            finally:
+                                loop.remove_reader(sys.stdin)
+                            await page.close()
+                        handle, display = await identity(context)
+                    except BaseException:
+                        if cookies is not None:
+                            try:
+                                await context.clear_cookies()
+                            except Exception:
+                                pass
+                        raise
+            state.bind(args.account, handle, display)
+        except BaseException:
+            if cookies is not None:
+                shutil.rmtree(profile)
+            raise
         return {"platform": "instagram", "account": args.account, "status": "authenticated", "error": None}, 0
+
+
+async def accept_ui(state: State, args, session_factory=browser_session, adapter_factory=InstagramEditor):
+    """Prepare and verify the actual editor without a request journal or Share."""
+    with state.lock(args.account):
+        account = state.account(args.account)
+        arguments = normalized(args)
+        directory = state.root / "accounts" / args.account
+        with private_uploads(directory) as staging:
+            media = []
+            for index, source in enumerate(arguments["media"]):
+                path = Path(staging) / f"{index + 1:03d}.media"
+                await asyncio.to_thread(snapshot, source, path)
+                extension = await asyncio.to_thread(validate_media, path, arguments["kind"])
+                final = path.with_suffix(extension)
+                path.rename(final)
+                media.append(final)
+            cover = None
+            if arguments["cover"]:
+                path = Path(staging) / "cover.media"
+                await asyncio.to_thread(snapshot, arguments["cover"], path)
+                extension = await asyncio.to_thread(validate_media, path, "photo")
+                cover = path.with_suffix(extension)
+                path.rename(cover)
+            caption = read_caption(arguments["caption"], arguments["caption_file"], arguments["metadata_file"])
+            async with asyncio.timeout(args.timeout_seconds):
+                async with session_factory(state.profile(args.account), args.headless) as context:
+                    adapter = adapter_factory(context, directory / "diagnostics")
+                    try:
+                        await adapter.open_editor(account)
+                        await adapter.prepare(media, caption, arguments["kind"], cover, arguments["ai_generated"])
+                        await adapter.verify(account, caption, arguments["kind"], cover, arguments["ai_generated"])
+                        screenshot = await adapter.screenshot("accepted-editor.png")
+                    except Exception as exc:
+                        screenshot = None
+                        try:
+                            screenshot = await adapter.screenshot()
+                        except Exception:
+                            pass
+                        error = exc if isinstance(exc, PublishError) else PublishError(
+                            "UI_ACCEPTANCE_FAILED", "Editor acceptance failed or timed out; inspect local diagnostics.", 3)
+                        if screenshot:
+                            error = PublishError(error.code, f"{error.message} Screenshot: {screenshot}", error.exit_code)
+                        raise error from exc
+            return {"platform": "instagram", "account": args.account, "status": "accepted",
+                    "audience": "public", "submitted": False, "screenshot": screenshot, "error": None}, 0
 
 
 async def reconcile(state: State, args, session_factory=browser_session, adapter_factory=InstagramEditor):

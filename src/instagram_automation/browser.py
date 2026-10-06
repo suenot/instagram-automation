@@ -78,7 +78,13 @@ async def identity(context):
         await page.goto(HOME, wait_until="domcontentloaded")
         if any(part in page.url for part in ("/accounts/login", "/challenge/", "/checkpoint/")):
             raise PublishError("LOGIN_REQUIRED", "Finish visible login and security checks, then retry.")
-        navigation = page.get_by_role("link", name="Profile", exact=True).filter(visible=True)
+        notifications = page.get_by_role("dialog").filter(has=page.get_by_role("heading", name="Turn on Notifications", exact=True))
+        try:
+            await notifications.get_by_role("button", name="Not Now", exact=True).click(timeout=5000)
+        except Exception:
+            pass
+        navigation = page.get_by_role("link", name="Profile", exact=True).or_(
+            page.locator(f'a[href="/{EXPECTED_HANDLE}/"]:has(img[alt="{EXPECTED_HANDLE}\'s profile picture"]):not(main a)')).filter(visible=True)
         try:
             await navigation.first.wait_for(state="visible", timeout=30000)
         except Exception as exc:
@@ -90,8 +96,11 @@ async def identity(context):
             raise PublishError("ACCOUNT_UNVERIFIED", "Profile navigation did not identify the current Instagram account.")
         handle = match.group(1).lower()
         await page.goto(HOME + handle + "/", wait_until="domcontentloaded")
-        header = await one(page.locator("main header"), "own profile header")
-        await (await one(header.get_by_role("heading", name=handle, exact=True), "profile username")).wait_for(state="visible")
+        await page.get_by_role("main").first.wait_for(state="visible", timeout=30000)
+        header = await one(page.get_by_role("main"), "own profile")
+        await header.get_by_role("heading", name=handle, exact=True).first.wait_for(state="visible", timeout=30000)
+        await one(header.get_by_role("heading", name=handle, exact=True), "profile username")
+        await (await one(header.get_by_role("link", name="Edit profile", exact=True), "own Edit profile control")).wait_for(state="visible")
         display = header.get_by_text(EXPECTED_DISPLAY_NAME, exact=True)
         if handle != EXPECTED_HANDLE or await display.count() != 1 or not await display.is_visible():
             raise PublishError("ACCOUNT_MISMATCH", "Current account must be @caribbeanawesome, displayed as Caribbean Awesome.")
@@ -106,6 +115,23 @@ async def verify_account(context, account):
         raise PublishError("ACCOUNT_MISMATCH", "Current Instagram account differs from the saved binding; run visible login.")
 
 
+async def verify_public_account(context):
+    """Read the account privacy setting; never change account visibility."""
+    page = await context.new_page()
+    try:
+        await page.goto(HOME + "accounts/settings/v2/account_privacy/", wait_until="domcontentloaded")
+        main = page.get_by_role("main")
+        await main.get_by_role("heading", name="Account privacy", exact=True).first.wait_for(state="visible", timeout=30000)
+        control = await one(main.get_by_role("switch", name="Private account", exact=True), "account privacy switch")
+        value = await control.get_attribute("aria-checked")
+        if value not in {"true", "false"}:
+            raise PublishError("PUBLIC_AUDIENCE_UNVERIFIED", "Account privacy has no readable state; no Share is allowed.", 3)
+        if value != "false":
+            raise PublishError("PUBLIC_ACCOUNT_REQUIRED", "This campaign requires a public Instagram account; no Share is allowed.", 3)
+    finally:
+        await page.close()
+
+
 class InstagramEditor:
     def __init__(self, context, diagnostics: Path):
         self.context = context
@@ -117,9 +143,9 @@ class InstagramEditor:
         self.crop_verified = False
         self.cover_hash = None
 
-    async def screenshot(self):
+    async def screenshot(self, name="last-failure.png"):
         if self.page and not self.page.is_closed():
-            path = self.diagnostics / "last-failure.png"
+            path = self.diagnostics / name
             try:
                 await self.page.screenshot(path=str(path), full_page=False, timeout=5000)
                 path.chmod(0o600)
@@ -141,10 +167,12 @@ class InstagramEditor:
 
     async def open_editor(self, account):
         await verify_account(self.context, account)
+        await verify_public_account(self.context)
         self.page = await self.context.new_page()
         await self.page.goto(HOME, wait_until="domcontentloaded")
         create = self.page.get_by_role("link", name=re.compile(r"^(Create|New post)$")).or_(
             self.page.get_by_role("button", name=re.compile(r"^(Create|New post)$"))).filter(visible=True)
+        await create.first.wait_for(state="visible", timeout=30000)
         await (await one(create, "Create navigation")).click()
         await self.page.get_by_role("dialog").wait_for(state="visible", timeout=30000)
 
@@ -167,18 +195,24 @@ class InstagramEditor:
                 if (/hidden|clip/.test(style.overflowX)) {left=Math.max(left,box.left);right=Math.min(right,box.right)}
                 if (/hidden|clip/.test(style.overflowY)) {top=Math.max(top,box.top);bottom=Math.min(bottom,box.bottom)}
             }
-            return {width:video.videoWidth,height:video.videoHeight,visibleWidth:right-left,visibleHeight:bottom-top};
+            return {width:video.videoWidth,height:video.videoHeight,visibleWidth:right-left,visibleHeight:bottom-top,
+                frameWidth:rect.width,frameHeight:rect.height};
         }""")
         if (size["width"] * 16 != size["height"] * 9 or size["visibleHeight"] <= 0
+                or size["frameWidth"] - size["visibleWidth"] > 2
+                or size["frameHeight"] - size["visibleHeight"] > 2
                 or abs(size["visibleWidth"] / size["visibleHeight"] - 9 / 16) > 0.015):
             raise PublishError("CROP_UNVERIFIED", "The complete vertical 9:16 Reel frame is not visible in the preview.", 3)
 
     async def select_crop(self, dialog):
-        control = await one(dialog.get_by_role("button", name=re.compile(r"^(Select crop|Crop)$")).filter(visible=True), "Crop control")
+        controls = dialog.get_by_role("button", name=re.compile(r"^(Select crop|Crop)$")).filter(
+            has_not=self.page.locator('button, [role="button"]')).filter(visible=True)
+        control = await one(controls, "Crop control")
         await control.click()
         label = re.compile(r"^9:16(?: Crop portrait icon)?$")
         choices = dialog.get_by_role("button", name=label).or_(
-            dialog.get_by_role("radio", name=label)).filter(visible=True)
+            dialog.get_by_role("radio", name=label)).filter(
+                has_not=self.page.locator('button, [role="button"]')).filter(visible=True)
         choice = await one(choices, "9:16 crop option")
         await choice.click()
         # The rendered frame, including clipping ancestors, must independently
@@ -221,57 +255,151 @@ class InstagramEditor:
         await self.verify_cover_preview(dialog)
 
     async def verify_cover_preview(self, dialog):
-        previews = dialog.locator('img[src^="blob:"], video[poster^="blob:"]').filter(visible=True)
-        await previews.first.wait_for(state="visible", timeout=10000)
-        preview = await one(previews, "uploaded cover preview")
-        encoded = await preview.evaluate("""async image => {
-            if (image.tagName==='IMG' && (!image.complete || !image.naturalWidth)) await new Promise((resolve,reject) => {
-                image.addEventListener('load',resolve,{once:true});image.addEventListener('error',reject,{once:true});
-            });
-            const blob=await (await fetch(image.tagName==='VIDEO' ? image.poster : image.src)).blob();
-            return await new Promise((resolve,reject) => {
-                const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);
-                reader.onerror=reject;reader.readAsDataURL(blob);
-            });
-        }""")
-        if not isinstance(encoded, str) or len(encoded) > 28 * 1024 ** 2:
-            raise PublishError("COVER_UNVERIFIED", "Cover preview bytes exceed the verification limit.", 3)
-        observed = hashlib.sha256(base64.b64decode(encoded, validate=True)).hexdigest()
-        if observed != self.cover_hash:
-            raise PublishError("COVER_UNVERIFIED", "The selected cover preview does not match the requested cover bytes.", 3)
+        # Instagram's primary cover preview is a CSS background in the live UI.
+        # Thumbnails alone cannot prove selection: only the largest rendered
+        # media preview may supply the exact requested bytes.
+        deadline = asyncio.get_running_loop().time() + 10
+        while True:
+            encoded = await dialog.evaluate(r"""async dialog => {
+                const candidates=[];
+                for (const element of dialog.querySelectorAll('img, video, div')) {
+                    const rect=element.getBoundingClientRect();
+                    if (!rect.width || !rect.height) continue;
+                    let visible=true;
+                    let left=Math.max(0,rect.left),right=Math.min(innerWidth,rect.right);
+                    let top=Math.max(0,rect.top),bottom=Math.min(innerHeight,rect.bottom);
+                    for (let parent=element; parent && parent!==dialog.parentElement; parent=parent.parentElement) {
+                        const style=getComputedStyle(parent);
+                        if (style.visibility==='hidden' || style.display==='none' || Number(style.opacity)===0) visible=false;
+                        if (parent!==element) {
+                            const box=parent.getBoundingClientRect();
+                            if (/hidden|clip/.test(style.overflowX)) {left=Math.max(left,box.left);right=Math.min(right,box.right)}
+                            if (/hidden|clip/.test(style.overflowY)) {top=Math.max(top,box.top);bottom=Math.min(bottom,box.bottom)}
+                        }
+                    }
+                    if (!visible || right<=left || bottom<=top) continue;
+                    const background=getComputedStyle(element).backgroundImage;
+                    const match=background.match(/^url\(["']?(.*?)["']?\)$/);
+                    const source=element.tagName==='IMG' ? element.src : element.tagName==='VIDEO' ? element.poster : match?.[1];
+                    const readable=source?.startsWith('blob:') || source?.startsWith('data:image/');
+                    if (readable || element.tagName==='IMG' || element.tagName==='VIDEO')
+                        candidates.push({element,rect,source:readable ? source : null,area:(right-left)*(bottom-top)});
+                }
+                if (!candidates.length) return null;
+                const largest=Math.max(...candidates.map(item=>item.area));
+                const primary=candidates.filter(item=>Math.abs(item.area-largest)<1);
+                for (const item of primary.filter(item=>!item.source)) {
+                    // Observed cover slot: exactly a static video followed by
+                    // its absolute, fully aligned cover overlay. Any separate
+                    // unreadable slot, including one of equal area, is rejected.
+                    const video=item.element,parent=video.parentElement;
+                    if (video.tagName!=='VIDEO' || parent.children.length!==2 || parent.children[0]!==video
+                        || getComputedStyle(parent).position!=='relative' || getComputedStyle(video).position!=='static'
+                        || getComputedStyle(video).zIndex!=='auto') return null;
+                    const cover=primary.find(candidate=>candidate.source && candidate.element===parent.children[1]);
+                    if (!cover || cover.element.tagName!=='DIV') return null;
+                    const style=getComputedStyle(cover.element);
+                    if (style.position!=='absolute' || style.zIndex!=='auto' || Number(style.opacity)!==1
+                        || style.backgroundImage==='none' || style.transform!=='none'
+                        || ['left','top','right','bottom'].some(key=>Math.abs(cover.rect[key]-item.rect[key])>=1)) return null;
+                    item.source=cover.source;
+                }
+                const sources=new Set(primary.map(item=>item.source));
+                if (sources.size!==1) return null;
+                const blob=await (await fetch(Array.from(sources)[0])).blob();
+                if (!blob.size || blob.size>20*1024**2) return null;
+                return await new Promise((resolve,reject) => {
+                    const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);
+                    reader.onerror=reject;reader.readAsDataURL(blob);
+                });
+            }""")
+            if isinstance(encoded, str) and len(encoded) <= 28 * 1024 ** 2:
+                observed = hashlib.sha256(base64.b64decode(encoded, validate=True)).hexdigest()
+                if observed == self.cover_hash:
+                    return
+            if asyncio.get_running_loop().time() >= deadline:
+                raise PublishError("COVER_UNVERIFIED", "The primary cover preview does not uniquely match the requested cover bytes.", 3)
+            await asyncio.sleep(0.2)
 
     async def caption_text(self):
         editor = await self.caption_editor()
         tag = await editor.evaluate("element => element.tagName.toLowerCase()")
+        if await editor.get_attribute("data-lexical-editor") == "true":
+            return await editor.locator(":scope > p").evaluate_all(r"""paragraphs => {
+                const text=node => node.nodeType===Node.TEXT_NODE ? node.nodeValue :
+                    node.nodeName==='BR' ? '\n' : Array.from(node.childNodes).map(text).join('');
+                return paragraphs.map(paragraph => paragraph.children.length===1 &&
+                    paragraph.firstElementChild.tagName==='BR' ? '' : text(paragraph)).join('\n');
+            }""")
         return await editor.input_value() if tag in {"textarea", "input"} else await editor.inner_text()
+
+    async def fill_caption(self, caption):
+        editor = await self.caption_editor()
+        if await editor.get_attribute("data-lexical-editor") == "true":
+            # Live Firefox contenteditable fill duplicates Lexical text. Native
+            # key events update the editor's saved state once per character.
+            await editor.click()
+            await editor.press("ControlOrMeta+A")
+            await editor.press("Backspace")
+            for index, line in enumerate(caption.split("\n")):
+                if index:
+                    await editor.press("Enter")
+                await editor.press_sequentially(line, delay=5)
+            # Finish the caption's hashtag suggestion overlay by blurring onto
+            # the static title, without accepting a suggested replacement.
+            dialog = await one(self.page.get_by_role("dialog").filter(visible=True), "caption dialog")
+            title = dialog.get_by_role("heading", name=re.compile(r"^(New reel|Create new post)$"))
+            await (await one(title, "caption editor title")).click()
+        else:
+            await editor.fill(caption)
 
     async def prepare(self, media, caption, kind, cover=None, ai_generated=False):
         dialog = await one(self.page.get_by_role("dialog").filter(visible=True), "post editor dialog")
-        control = await one(dialog.locator('input[type="file"]'), "media upload input")
+        select = dialog.get_by_role("button", name="Select from computer", exact=True).filter(visible=True)
+        await select.first.wait_for(state="visible", timeout=30000)
+        controls = dialog.locator('input[type="file"]')
+        if await controls.count() == 1:
+            control = await one(controls, "media upload input")
+            await control.set_input_files([str(path) for path in media])
+        else:
+            async with self.page.expect_file_chooser() as chooser:
+                await (await one(select, "media file selection")).click()
+            choice = await chooser.value
+            control = choice.element
+            if len(media) > 1 and not choice.is_multiple():
+                raise PublishError("UI_CHANGED", "The current editor does not provide a verified carousel upload input.", 3)
+            await choice.set_files([str(path) for path in media])
         if len(media) > 1 and await control.get_attribute("multiple") is None:
             raise PublishError("UI_CHANGED", "The current editor does not provide a verified carousel upload input.", 3)
-        await control.set_input_files([str(path) for path in media])
         filenames = await control.evaluate("element => Array.from(element.files).map(file => file.name)")
         if filenames != [path.name for path in media]:
             raise PublishError("MEDIA_ORDER_UNVERIFIED", "Upload input does not contain every item in the requested order.", 3)
         if kind == "reel":
+            crop = dialog.get_by_role("button", name=re.compile(r"^(Select crop|Crop)$"))
+            intro = dialog.get_by_role("heading", name="Video posts are now shared as reels", exact=True)
+            await crop.or_(intro).first.wait_for(state="visible", timeout=30000)
+            if await intro.count() == 1 and await intro.is_visible():
+                await (await one(dialog.get_by_role("button", name="OK", exact=True), "Reels information acknowledgment")).click()
+            await crop.first.wait_for(state="visible", timeout=30000)
             await self.select_crop(dialog)
         # Crop and Edit each have an unambiguous Next action. Never bypass an unknown step.
         for _ in range(3):
-            if await dialog.get_by_role("textbox", name=CAPTION_LABEL).count() == 1:
+            editor = dialog.get_by_role("textbox", name=CAPTION_LABEL)
+            next_button = dialog.get_by_role("button", name="Next", exact=True).filter(visible=True)
+            await editor.or_(next_button).first.wait_for(state="visible", timeout=30000)
+            if await editor.count() == 1:
                 break
             if cover and await dialog.get_by_text("Cover photo", exact=True).count() == 1:
                 await self.select_cover(dialog, cover)
-            next_button = dialog.get_by_role("button", name="Next", exact=True).filter(visible=True)
-            await next_button.first.wait_for(state="visible", timeout=30000)
             await (await one(next_button, "Next editor step")).click()
-        await (await self.caption_editor()).fill(caption)
+        await self.fill_caption(caption)
         if kind == "reel":
             await self.vertical_preview(dialog)
             await self.set_ai_label(dialog, ai_generated)
 
     async def verify(self, account, caption, kind, cover=None, ai_generated=False):
         await verify_account(self.context, account)
+        await verify_public_account(self.context)
         if await self.caption_text() != caption:
             raise PublishError("CAPTION_MISMATCH", "The editor did not preserve the exact caption.", 3)
         dialog = await one(self.page.get_by_role("dialog").filter(visible=True), "final post editor")
@@ -323,13 +451,30 @@ class InstagramEditor:
     async def author_caption(self, article, account):
         author = f'a[href="/{account["handle"]}/"]'
         entries = article.locator(f"ul li:has({author})")
-        entry = await one(entries, "author's caption entry")
-        fields = entry.locator('span[dir="auto"]').filter(visible=True)
-        indexes = await fields.evaluate_all("""elements => elements.flatMap((element,index) =>
-            element.closest('a, button, time') ? [] : [index])""")
-        if len(indexes) != 1:
-            raise PublishError("POST_CAPTION_UNVERIFIED", "The author's specific caption field is not uniquely readable.", 4)
-        return await fields.nth(indexes[0]).evaluate(r"""element => {
+        if await entries.count():
+            entry = await one(entries, "author's caption entry")
+            fields = entry.locator('span[dir="auto"]').filter(visible=True)
+            indexes = await fields.evaluate_all("""elements => elements.flatMap((element,index) =>
+                element.closest('a, button, time') ? [] : [index])""")
+            if len(indexes) != 1:
+                raise PublishError("POST_CAPTION_UNVERIFIED", "The author's specific caption field is not uniquely readable.", 4)
+            field = fields.nth(indexes[0])
+        else:
+            # The observed Reel page uses a caption span immediately after the
+            # author/time div, inside a span[dir=auto]. Comments cannot supply it.
+            containers = article.locator(f'span[dir="auto"] > div:has(> div > {author})').filter(visible=True)
+            await containers.first.wait_for(state="visible", timeout=30000)
+            container = await one(containers, "author's caption container")
+            valid = await container.evaluate("""(element, href) => {
+                const children=Array.from(element.children);
+                return children.length===2 && children[0].tagName==='DIV' && children[1].tagName==='SPAN'
+                    && children[0].querySelectorAll(`a[href="${href}"]`).length===1
+                    && !children[1].querySelector(`a[href="${href}"]`);
+            }""", f'/{account["handle"]}/')
+            if not valid:
+                raise PublishError("POST_CAPTION_UNVERIFIED", "The author's adjacent caption field is not uniquely readable.", 4)
+            field = container.locator(":scope > span")
+        return await field.evaluate(r"""element => {
             const text=node => node.nodeType===Node.TEXT_NODE ? node.nodeValue :
                 node.nodeName==='BR' ? '\n' : Array.from(node.childNodes).map(text).join('');
             return text(element);
@@ -364,8 +509,19 @@ class InstagramEditor:
     async def verify_post_media(self, article, page, kind, details, manually_confirmed):
         videos = article.locator("video")
         if kind == "reel":
+            await videos.first.wait_for(state="visible", timeout=30000)
             if await videos.count() != 1:
                 raise PublishError("POST_TYPE_MISMATCH", "Published Reel must contain one video.", 4)
+            playable = await videos.evaluate("""async video => {
+                if (video.readyState<2) await new Promise((resolve,reject) => {
+                    const timer=setTimeout(()=>reject(Error('Reel media unavailable')),15000);
+                    video.addEventListener('loadeddata',()=>{clearTimeout(timer);resolve()},{once:true});
+                });
+                return video.videoWidth>0 && video.videoWidth*16===video.videoHeight*9
+                    && Number.isFinite(video.duration) && video.duration>0;
+            }""")
+            if not playable:
+                raise PublishError("POST_MEDIA_UNVERIFIED", "Published Reel is not a playable vertical 9:16 video.", 4)
             return
         if await videos.count() != 0:
             raise PublishError("POST_TYPE_MISMATCH", "Photo/image carousel cannot be verified from a video post.", 4)
@@ -400,11 +556,23 @@ class InstagramEditor:
         page = await self.context.new_page()
         try:
             await page.goto(canonical, wait_until="domcontentloaded")
-            article = await one(page.get_by_role("article"), "published post article")
-            await article.wait_for(state="visible", timeout=30000)
-            author = article.locator(f'header a[href="/{account["handle"]}/"]')
-            if await author.count() != 1:
-                raise PublishError("POST_UNVERIFIED", "Published post author is not uniquely verified.", 4)
+            if post_url(page.url) != canonical:
+                raise PublishError("POST_URL_UNVERIFIED", "Instagram redirected away from the exact requested post URL.", 4)
+            await page.get_by_role("main").first.wait_for(state="visible", timeout=30000)
+            articles = page.get_by_role("article")
+            if await articles.count():
+                article = await one(articles, "published post article")
+                author = article.locator(f'header a[href="/{account["handle"]}/"]')
+                if await author.count() != 1:
+                    raise PublishError("POST_UNVERIFIED", "Published post author is not uniquely verified.", 4)
+            else:
+                article = await one(page.get_by_role("main"), "published post main")
+                await article.locator(f'a[href="/{account["handle"]}/"]').first.wait_for(state="visible", timeout=30000)
+                primary = await article.locator('a[href]').evaluate_all("""links => links.filter(link =>
+                    link.getClientRects().length && /^\\/[A-Za-z0-9._]+\\/$/.test(link.getAttribute('href'))
+                ).map(link => link.getAttribute('href'))[0]""")
+                if primary != f'/{account["handle"]}/':
+                    raise PublishError("POST_UNVERIFIED", "Published post's primary author differs from the bound account.", 4)
             if await self.author_caption(article, account) != caption:
                 raise PublishError("POST_UNVERIFIED", "Published post caption cannot be verified exactly.", 4)
             evidence = {**details, "account_identity": account}

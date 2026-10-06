@@ -1,5 +1,6 @@
 """Headless local DOM only; no Instagram account or live session is opened."""
 import base64
+import hashlib
 from io import BytesIO
 import os
 import subprocess
@@ -8,7 +9,7 @@ from PIL import Image
 import pytest
 from playwright.async_api import async_playwright
 
-from instagram_automation.browser import InstagramEditor, browser_session
+from instagram_automation.browser import HOME, InstagramEditor, browser_session, identity, verify_public_account
 from instagram_automation.errors import PublishError
 
 ACCOUNT = {"handle": "caribbeanawesome", "display_name": "Caribbean Awesome"}
@@ -54,6 +55,10 @@ async def test_square_crop_is_rejected_then_explicit_9_16_verified(page, tmp_pat
     assert error.value.code == "CROP_UNVERIFIED"
     await adapter.select_crop(dialog)
     assert adapter.crop_verified is True
+    await page.locator('video').evaluate("video => {video.style.width='450px';video.style.height='800px'}")
+    with pytest.raises(PublishError) as error:
+        await adapter.vertical_preview(dialog)
+    assert error.value.code == "CROP_UNVERIFIED"
 
 
 async def test_ai_label_is_checked_and_unreadable_state_rejected(page, tmp_path):
@@ -88,6 +93,34 @@ async def test_cover_must_match_uploaded_bytes(page, tmp_path):
     assert error.value.code == "COVER_UNVERIFIED"
 
 
+async def test_matching_cover_thumbnail_cannot_prove_larger_video_selection(page, tmp_path):
+    cover = tmp_path / "cover.png"
+    Image.new("RGB", (9, 16), "red").save(cover)
+    encoded = "data:image/png;base64," + base64.b64encode(cover.read_bytes()).decode()
+    await page.set_content(f'<div role=dialog><video style="width:225px;height:400px"></video><img src="{encoded}" style="width:40px;height:40px"></div>')
+    adapter = InstagramEditor(page.context, tmp_path / "diagnostics")
+    adapter.cover_hash = hashlib.sha256(cover.read_bytes()).hexdigest()
+    with pytest.raises(PublishError) as error:
+        await adapter.verify_cover_preview(page.get_by_role("dialog"))
+    assert error.value.code == "COVER_UNVERIFIED"
+    await page.locator('img').evaluate('(element, source)=>{element.remove();const preview=document.createElement("div");preview.style="width:225px;height:400px";preview.style.backgroundImage=`url("${source}")`;document.querySelector("[role=dialog]").append(preview)}', encoded)
+    with pytest.raises(PublishError) as error:
+        await adapter.verify_cover_preview(page.get_by_role("dialog"))
+    assert error.value.code == "COVER_UNVERIFIED"
+    await page.get_by_role('dialog').evaluate('element=>{element.style="position:relative;width:225px;height:400px";const cover=element.lastElementChild;cover.style.position="absolute";cover.style.left="0px";cover.style.top="0px";}')
+    await adapter.verify_cover_preview(page.get_by_role("dialog"))
+    await page.locator('video').evaluate('element=>element.remove()')
+    await adapter.verify_cover_preview(page.get_by_role("dialog"))
+
+
+async def test_lexical_caption_reader_preserves_blank_lines_and_whitespace(page, tmp_path):
+    await page.set_content('''<div role=dialog><div contenteditable=true role=textbox aria-label="Add a caption..." data-lexical-editor=true>
+        <p><span>  Exact</span></p><p><br></p><p><span>Caption 🌴 #tag </span></p><p><br></p></div></div>''')
+    adapter = InstagramEditor(page.context, tmp_path / "diagnostics")
+    adapter.page = page
+    assert await adapter.caption_text() == "  Exact\n\nCaption 🌴 #tag \n"
+
+
 async def test_author_caption_preserves_whitespace_and_ignores_comments(page, tmp_path):
     await page.set_content('''<article><header><a href="/caribbeanawesome/">caribbeanawesome</a></header>
         <ul><li><a href="/caribbeanawesome/">caribbeanawesome</a><span dir=auto>  Exact<br>Caption #tag </span></li>
@@ -98,6 +131,17 @@ async def test_author_caption_preserves_whitespace_and_ignores_comments(page, tm
     await page.locator('li a[href="/other/"]').evaluate("element=>element.setAttribute('href','/caribbeanawesome/')")
     with pytest.raises(PublishError):
         await adapter.author_caption(page.get_by_role("article"), ACCOUNT)
+
+
+async def test_main_reel_caption_is_adjacent_to_exact_author_and_keeps_line_breaks(page, tmp_path):
+    await page.set_content('''<main><a href="/caribbeanawesome/">caribbeanawesome</a>
+        <span dir=auto><div><div><a href="/caribbeanawesome/">caribbeanawesome</a><span>4h</span></div>
+        <span>  Exact<br><br>Caption <a href="/explore/tags/tag/">#tag</a> </span></div></span></main>''')
+    adapter = InstagramEditor(page.context, tmp_path / "diagnostics")
+    assert await adapter.author_caption(page.get_by_role("main"), ACCOUNT) == "  Exact\n\nCaption #tag "
+    await page.locator('main').evaluate("element => element.insertAdjacentHTML('beforeend', '<span dir=auto><div><div><a href=\"/caribbeanawesome/\">caribbeanawesome</a></div><span>comment</span></div></span>')")
+    with pytest.raises(PublishError):
+        await adapter.author_caption(page.get_by_role("main"), ACCOUNT)
 
 
 async def test_photo_carousel_type_count_and_order(page, tmp_path, monkeypatch):
@@ -131,6 +175,30 @@ async def test_reel_url_cannot_reconcile_photo(tmp_path):
     with pytest.raises(PublishError) as error:
         await adapter.verify_post("https://www.instagram.com/reel/Example/", ACCOUNT, "", "photo", {"media_sha256": ["hash"]}, True)
     assert error.value.code == "POST_TYPE_MISMATCH"
+
+
+async def test_identity_ignores_feed_avatar_links(page):
+    home = '''<a href="/caribbeanawesome/"><img alt="caribbeanawesome's profile picture"></a>
+        <main><a href="/other/"><img alt="other's profile picture"></a>
+        <a href="/caribbeanawesome/"><img alt="caribbeanawesome's profile picture"></a></main>'''
+    own = '''<a href="/caribbeanawesome/"><img alt="caribbeanawesome's profile picture"></a>
+        <main><h2>caribbeanawesome</h2><span>Caribbean Awesome</span><a href="/accounts/edit/">Edit profile</a></main>'''
+    await page.context.route(HOME + "**", lambda route: route.fulfill(
+        status=200, content_type="text/html", body=own if 'caribbeanawesome' in route.request.url else home))
+    assert await identity(page.context) == ("caribbeanawesome", "Caribbean Awesome")
+
+
+@pytest.mark.parametrize("value,code", [("false", None), ("true", "PUBLIC_ACCOUNT_REQUIRED"), ("missing", "PUBLIC_AUDIENCE_UNVERIFIED")])
+async def test_public_account_requires_readable_private_switch_off(page, value, code):
+    attribute = f'aria-checked="{value}"' if value != "missing" else ""
+    html = f'<main><h2>Account privacy</h2><button role=switch aria-label="Private account" {attribute}></button></main>'
+    await page.context.route(HOME + "**", lambda route: route.fulfill(status=200, content_type="text/html", body=html))
+    if code is None:
+        await verify_public_account(page.context)
+    else:
+        with pytest.raises(PublishError) as error:
+            await verify_public_account(page.context)
+        assert error.value.code == code
 
 
 async def test_concurrent_identical_caption_post_cannot_confirm_current_share(page, tmp_path, monkeypatch):

@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 
 from .errors import PublishError
-from .service import login, publish, reconcile
+from .service import accept_ui, login, publish, reconcile
 from .browser import post_url
 from .state import State, account_name, request_id, result
 
@@ -46,18 +46,21 @@ def parser():
     runtime.add_argument("--headless", action="store_true")
     log = commands.add_parser("login", parents=[common])
     log.add_argument("--timeout-seconds", type=timeout_seconds, default=1800)
-    pub = commands.add_parser("publish", parents=[common, runtime])
-    pub.add_argument("--request-id", required=True)
-    pub.add_argument("--kind", choices=["reel", "photo", "carousel"])
-    media = pub.add_mutually_exclusive_group(required=True)
-    media.add_argument("--media", action="append")
-    media.add_argument("--video", help="Alias for one Reel media source.")
-    captions = pub.add_mutually_exclusive_group(required=True)
-    captions.add_argument("--caption")
-    captions.add_argument("--caption-file")
-    captions.add_argument("--metadata-file")
-    pub.add_argument("--cover", help="Local JPEG/PNG cover for a Reel.")
-    pub.add_argument("--ai-generated", action="store_true", help="Enable and verify the editor's Add AI label.")
+    log.add_argument("--import-firefox", type=Path, help="Import only Instagram cookies into an unused Camoufox profile, then verify the fixed account.")
+    for command in ("publish", "accept-ui"):
+        pub = commands.add_parser(command, parents=[common, runtime])
+        if command == "publish":
+            pub.add_argument("--request-id", required=True)
+        pub.add_argument("--kind", choices=["reel", "photo", "carousel"])
+        media = pub.add_mutually_exclusive_group(required=True)
+        media.add_argument("--media", action="append")
+        media.add_argument("--video", help="Alias for one Reel media source.")
+        captions = pub.add_mutually_exclusive_group(required=True)
+        captions.add_argument("--caption")
+        captions.add_argument("--caption-file")
+        captions.add_argument("--metadata-file")
+        pub.add_argument("--cover", help="Local JPEG/PNG cover for a Reel.")
+        pub.add_argument("--ai-generated", action="store_true", help="Enable and verify the editor's Add AI label.")
     status = commands.add_parser("status", parents=[common])
     status.add_argument("--request-id", required=True)
     rec = commands.add_parser("reconcile", parents=[common, runtime])
@@ -80,7 +83,7 @@ def failure(args, error, raw):
     command = args.command if args else (raw[0] if raw else None)
     if command in {"publish", "status", "reconcile"}:
         payload.update({"account": getattr(args, "account", None), "request_id": getattr(args, "request_id", None), "post_url": None})
-    elif command == "login":
+    elif command in {"login", "accept-ui"}:
         payload["account"] = getattr(args, "account", None)
     return payload
 
@@ -96,7 +99,7 @@ def main(argv=None):
                 account_name(args.account)
             if hasattr(args, "request_id"):
                 request_id(args.request_id)
-            if args.command == "publish":
+            if args.command in {"publish", "accept-ui"}:
                 if args.video and args.kind not in {None, "reel"}:
                     raise PublishError("INVALID_ARGUMENTS", "--video can only publish a Reel.")
                 if args.media and not args.kind:
@@ -125,7 +128,7 @@ def main(argv=None):
                     from .debug_ui import serve
                     payload, code = serve(state, args.port)
                 else:
-                    handler = {"login": login, "publish": publish, "reconcile": reconcile}[args.command]
+                    handler = {"login": login, "publish": publish, "reconcile": reconcile, "accept-ui": accept_ui}[args.command]
                     payload, code = asyncio.run(handler(state, args))
             finally:
                 os.umask(old_umask)

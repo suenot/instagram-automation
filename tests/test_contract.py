@@ -13,7 +13,7 @@ from instagram_automation.browser import post_url
 from instagram_automation.cli import main
 from instagram_automation.errors import PublishError
 from instagram_automation.media import public_addresses, read_caption, snapshot, source_name
-from instagram_automation.service import normalized, publish
+from instagram_automation.service import accept_ui, normalized, publish
 from instagram_automation.state import State
 
 
@@ -66,8 +66,15 @@ class Adapter:
         self.post_url = "https://www.instagram.com/reel/new/"
         return self.post_url
 
-    async def screenshot(self):
+    async def screenshot(self, *_):
         return None
+
+
+async def test_acceptance_prepares_and_verifies_without_journal_or_share(state, tmp_path):
+    output, code = await accept_ui(state, args(tmp_path), fake_session, Adapter)
+    assert code == 0 and output["status"] == "accepted" and output["submitted"] is False
+    assert Adapter.seen[1] == "  Exact\nCaption #tag\n" and Adapter.clicks == 0
+    assert state.get("caribbean", "one") is None
 
 
 @pytest.fixture

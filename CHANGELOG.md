@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format follows Keep
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-07
+
+### Added
+
+- Site-scoped Firefox session import into an unused persistent Camoufox profile, with read-only in-memory cookies, exact account verification and cleanup after failed import.
+- `accept-ui` for real pre-submit verification without a request journal entry or Share.
+- Mandatory Public account checks before preparation and final submission.
+
+### Fixed
+
+- Recognize the live own-profile sidebar and Edit profile controls while excluding feed avatars.
+- Wait for asynchronous editor steps, support the actual file chooser and acknowledge only the observed Reels information dialog.
+- Reject a clipped or zoomed video even when its visible box retains 9:16.
+- Verify exact cover bytes in the primary CSS preview and observed video/cover overlay slot; matching thumbnails and ambiguous equal-size media cannot prove cover selection.
+- Preserve Lexical captions with native key events, exact paragraph reading and safe dismissal of hashtag suggestions.
+- Verify the observed primary post author and adjacent caption structure, preserving line breaks, and reject redirects away from the exact post URL.
+
 ## [0.1.1] - 2026-10-06
 
 ### Fixed
