@@ -71,6 +71,26 @@ def post_url(value):
     return HOME.rstrip("/") + parsed.path.rstrip("/") + "/"
 
 
+def created_reel_urls(payload, handle, caption):
+    """Match fields on one media object from this Share's configure response."""
+    found = set()
+    def visit(value):
+        if isinstance(value, dict):
+            user, text, code = value.get("user"), value.get("caption"), value.get("code")
+            if (isinstance(user, dict) and user.get("username") == handle
+                    and isinstance(text, dict) and text.get("text") == caption
+                    and value.get("media_type") == 2 and isinstance(code, str)
+                    and re.fullmatch(r"[A-Za-z0-9_-]+", code)):
+                found.add(HOME + "reel/" + code + "/")
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+    visit(payload)
+    return found
+
+
 async def identity(context):
     """The authenticated navigation supplies the own profile, never a search result."""
     page = await context.new_page()
@@ -142,6 +162,9 @@ class InstagramEditor:
         self.submitted = False
         self.crop_verified = False
         self.cover_hash = None
+        self.creation_urls = set()
+        self.creation_tasks = []
+        self.prepared_identity = None
 
     async def screenshot(self, name="last-failure.png"):
         if self.page and not self.page.is_closed():
@@ -420,17 +443,40 @@ class InstagramEditor:
         self.share = await one(dialog.get_by_role("button", name="Share", exact=True).filter(visible=True), "final Share button")
         if not await self.share.is_enabled():
             raise PublishError("EDITOR_NOT_READY", "The final Share button is disabled.", 3)
+        self.prepared_identity = (account["handle"], caption, kind)
+
+    async def capture_creation(self, response):
+        """Observe the browser's own configure result, without persisting secrets."""
+        endpoint = urlsplit(response.url)
+        if (response.request.method != "POST" or response.status != 200
+                or endpoint.hostname not in {"instagram.com", "www.instagram.com"}
+                or endpoint.path.rstrip("/") not in {"/api/v1/media/configure_to_clips", "/api/v1/media/configure"}):
+            return
+        try:
+            handle, caption, kind = self.prepared_identity
+            if kind == "reel":
+                self.creation_urls.update(created_reel_urls(await response.json(), handle, caption))
+                evidence = self.diagnostics / "creation-evidence.json"
+                evidence.write_text(json.dumps({"path": endpoint.path, "status": response.status,
+                                                "post_urls": sorted(self.creation_urls)}))
+                evidence.chmod(0o600)
+        except Exception:
+            return
 
     async def submit(self):
         if self.submitted or self.share is None:
             raise PublishError("SUBMISSION_GUARD", "Final Share was not verified or was already invoked.", 4)
         self.submitted = True
+        if self.prepared_identity:
+            self.page.on("response", lambda response: self.creation_tasks.append(
+                asyncio.create_task(self.capture_creation(response))))
         await self.share.click(timeout=30000)
 
     async def confirm(self, account, caption, kind, details):
         success = self.page.get_by_text("Your post has been shared.", exact=True).or_(
             self.page.get_by_text("Your reel has been shared.", exact=True)).filter(visible=True)
-        await success.first.wait_for(state="visible", timeout=120000)
+        # The command owns the deadline; video processing may exceed two minutes.
+        await success.first.wait_for(state="visible", timeout=0)
         if await success.count() != 1:
             raise PublishError("SUBMISSION_UNCERTAIN", "Instagram did not uniquely confirm successful sharing.", 4)
         # Only the current Share result may identify this post. A profile delta
@@ -441,6 +487,9 @@ class InstagramEditor:
         urls = await dialogs.locator('a[href*="/reel/"], a[href*="/p/"]').evaluate_all(
             "links => links.map(link => link.href)")
         candidates = {url for raw in urls if (url := post_url(raw))}
+        if self.creation_tasks:
+            await asyncio.gather(*self.creation_tasks, return_exceptions=True)
+        candidates.update(self.creation_urls)
         if len(candidates) != 1:
             raise PublishError("POST_URL_UNVERIFIED", "Sharing was confirmed but its result does not identify a unique personal post URL; inspect manually.", 4)
         candidate = candidates.pop()
@@ -462,7 +511,7 @@ class InstagramEditor:
         else:
             # The observed Reel page uses a caption span immediately after the
             # author/time div, inside a span[dir=auto]. Comments cannot supply it.
-            containers = article.locator(f'span[dir="auto"] > div:has(> div > {author})').filter(visible=True)
+            containers = article.locator(f'span[dir="auto"] > div:has(> div {author})').filter(visible=True)
             await containers.first.wait_for(state="visible", timeout=30000)
             container = await one(containers, "author's caption container")
             valid = await container.evaluate("""(element, href) => {
@@ -556,7 +605,17 @@ class InstagramEditor:
         page = await self.context.new_page()
         try:
             await page.goto(canonical, wait_until="domcontentloaded")
-            if post_url(page.url) != canonical:
+            inspection_url = canonical
+            shortcode = urlsplit(canonical).path.strip("/").split("/")[-1]
+            actual = urlsplit(page.url)
+            if (kind == "reel" and urlsplit(canonical).path.startswith("/reel/")
+                    and actual.scheme == "https" and actual.hostname in {"instagram.com", "www.instagram.com"}
+                    and actual.path.rstrip("/") == "/reels/" + shortcode):
+                # The new Reels viewer includes unrelated recommendations. The
+                # same shortcode's post view exposes one author/caption/video.
+                inspection_url = HOME + "p/" + shortcode + "/"
+                await page.goto(inspection_url, wait_until="domcontentloaded")
+            if post_url(page.url) != inspection_url:
                 raise PublishError("POST_URL_UNVERIFIED", "Instagram redirected away from the exact requested post URL.", 4)
             await page.get_by_role("main").first.wait_for(state="visible", timeout=30000)
             articles = page.get_by_role("article")

@@ -133,15 +133,46 @@ async def test_author_caption_preserves_whitespace_and_ignores_comments(page, tm
         await adapter.author_caption(page.get_by_role("article"), ACCOUNT)
 
 
-async def test_main_reel_caption_is_adjacent_to_exact_author_and_keeps_line_breaks(page, tmp_path):
-    await page.set_content('''<main><a href="/caribbeanawesome/">caribbeanawesome</a>
-        <span dir=auto><div><div><a href="/caribbeanawesome/">caribbeanawesome</a><span>4h</span></div>
+@pytest.mark.parametrize("nested", [False, True])
+async def test_main_reel_caption_is_adjacent_to_exact_author_and_keeps_line_breaks(page, tmp_path, nested):
+    author = '<a href="/caribbeanawesome/">caribbeanawesome</a>'
+    if nested:
+        author = '<span><span><div>' + author + '</div></span></span>'
+    await page.set_content(f'''<main><a href="/caribbeanawesome/">caribbeanawesome</a>
+        <span dir=auto><div><div>{author}<span>4h</span></div>
         <span>  Exact<br><br>Caption <a href="/explore/tags/tag/">#tag</a> </span></div></span></main>''')
     adapter = InstagramEditor(page.context, tmp_path / "diagnostics")
     assert await adapter.author_caption(page.get_by_role("main"), ACCOUNT) == "  Exact\n\nCaption #tag "
     await page.locator('main').evaluate("element => element.insertAdjacentHTML('beforeend', '<span dir=auto><div><div><a href=\"/caribbeanawesome/\">caribbeanawesome</a></div><span>comment</span></div></span>')")
     with pytest.raises(PublishError):
         await adapter.author_caption(page.get_by_role("main"), ACCOUNT)
+
+
+@pytest.mark.parametrize("same_shortcode", [True, False])
+async def test_reels_viewer_redirect_inspects_only_same_shortcode_post(page, tmp_path, monkeypatch, same_shortcode):
+    visited = []
+    async def route(request):
+        path = request.request.url.split("instagram.com", 1)[1]
+        visited.append(path)
+        if path == "/reel/ThisShare/":
+            await request.fulfill(status=302, headers={"location": "/reels/" + ("ThisShare" if same_shortcode else "Other") + "/"})
+        else:
+            await request.fulfill(content_type="text/html", body='''<main><a href="/caribbeanawesome/">caribbeanawesome</a>
+                <span dir=auto><div><div><span><a href="/caribbeanawesome/">caribbeanawesome</a></span></div>
+                <span>Exact</span></div></span><video></video></main>''')
+    await page.context.route("https://www.instagram.com/**", route)
+    adapter = InstagramEditor(page.context, tmp_path / "diagnostics")
+    checked = []
+    async def media(_article, target, *_args):
+        checked.append(target.url)
+    monkeypatch.setattr(adapter, "verify_post_media", media)
+    if same_shortcode:
+        await adapter.verify_post(HOME + "reel/ThisShare/", ACCOUNT, "Exact", "reel", {})
+        assert checked == [HOME + "p/ThisShare/"]
+    else:
+        with pytest.raises(PublishError, match="redirected"):
+            await adapter.verify_post(HOME + "reel/ThisShare/", ACCOUNT, "Exact", "reel", {})
+        assert not checked and "/p/Other/" not in visited
 
 
 async def test_photo_carousel_type_count_and_order(page, tmp_path, monkeypatch):

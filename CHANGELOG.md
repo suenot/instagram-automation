@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format follows Keep
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-08
+
+### Fixed
+
+- Wait for video sharing under the command deadline instead of closing after two minutes.
+- Recover the new Reel URL from this Share's successful configure response only when one media object contains the exact author, caption, video type and shortcode. Keep private diagnostics limited to endpoint path, status and public result URLs.
+- Verify a redirect to the new Reels viewer through the same shortcode's single-post view, rejecting changed shortcodes and unrelated recommendations.
+- Read the observed nested author link beside the original caption without borrowing text from comments.
+
 ## [0.2.0] - 2026-10-07
 
 ### Added
