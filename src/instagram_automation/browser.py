@@ -15,6 +15,7 @@ import re
 import sys
 from urllib.parse import urljoin, urlsplit
 
+from . import human
 from .errors import PublishError
 from .state import private_dir
 
@@ -361,20 +362,25 @@ class InstagramEditor:
         if await editor.get_attribute("data-lexical-editor") == "true":
             # Live Firefox contenteditable fill duplicates Lexical text. Native
             # key events update the editor's saved state once per character.
-            await editor.click()
+            # press_sequentially(delay=5) produced those key events at 5 ms
+            # intervals, which no hand produces; human.type_segments varies the
+            # interval and inserts what a keyboard cannot type.
+            await human.click(self.page, editor)
             await editor.press("ControlOrMeta+A")
             await editor.press("Backspace")
-            for index, line in enumerate(caption.split("\n")):
-                if index:
-                    await editor.press("Enter")
-                await editor.press_sequentially(line, delay=5)
+            await human.type_segments(self.page, caption)
             # Finish the caption's hashtag suggestion overlay by blurring onto
             # the static title, without accepting a suggested replacement.
             dialog = await one(self.page.get_by_role("dialog").filter(visible=True), "caption dialog")
             title = dialog.get_by_role("heading", name=re.compile(r"^(New reel|Create new post)$"))
             await (await one(title, "caption editor title")).click()
         else:
-            await editor.fill(caption)
+            # fill() hands the field its whole value with no keystroke behind
+            # it, which is a page's plainest sign that nobody typed.
+            await human.click(self.page, editor)
+            await editor.press("ControlOrMeta+A")
+            await editor.press("Backspace")
+            await human.type_segments(self.page, caption)
 
     async def prepare(self, media, caption, kind, cover=None, ai_generated=False):
         dialog = await one(self.page.get_by_role("dialog").filter(visible=True), "post editor dialog")

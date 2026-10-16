@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format follows Keep
 
 ## [Unreleased]
 
+### Fixed
+
+- Type the caption at a pace a hand produces, in both editors. The Lexical path used `press_sequentially(delay=5)`, a metronome, and the plain path used `fill`, which hands the field its whole value with no keystroke behind it.
+
+### Added
+
+- `human` module for input that leaves the trace a person leaves: an eased approach to a control, a pause before pressing, typing with a varying interval, insertion for what a keyboard cannot produce, and a real clipboard paste behind an opt-in that is off by default. Kept in step with the copies in the other publishers, which are standalone repositories sharing no package. The measurements behind it are in `docs-site/@docs/guides/what-a-page-sees-when-we-type.md`.
+- Test that fails the build if any module in the package dispatches a browser event or puts text in without keystrokes through `execCommand`, `fill`, `insert_text` or `press_sequentially`.
+
 ## [0.2.1] - 2026-10-08
 
 ### Fixed
