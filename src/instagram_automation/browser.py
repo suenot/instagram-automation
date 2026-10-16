@@ -368,7 +368,8 @@ class InstagramEditor:
             await human.click(self.page, editor)
             await editor.press("ControlOrMeta+A")
             await editor.press("Backspace")
-            await human.type_segments(self.page, caption)
+            await human.enter_text(self.page, editor, caption,
+                                   read_back=self.caption_text)
             # Finish the caption's hashtag suggestion overlay by blurring onto
             # the static title, without accepting a suggested replacement.
             dialog = await one(self.page.get_by_role("dialog").filter(visible=True), "caption dialog")
@@ -380,7 +381,8 @@ class InstagramEditor:
             await human.click(self.page, editor)
             await editor.press("ControlOrMeta+A")
             await editor.press("Backspace")
-            await human.type_segments(self.page, caption)
+            await human.enter_text(self.page, editor, caption,
+                                   read_back=self.caption_text)
 
     async def prepare(self, media, caption, kind, cover=None, ai_generated=False):
         dialog = await one(self.page.get_by_role("dialog").filter(visible=True), "post editor dialog")

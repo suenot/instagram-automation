@@ -234,24 +234,26 @@ def write_clipboard(text):
 async def paste(page, text, rng=random):
     """Paste through the system clipboard, so the browser raises the event.
 
-    Off by default, and it must stay that way unless the machine is ours
-    alone. The clipboard is global: between writing our text and pressing the
-    paste key, the person at the keyboard or another agent can copy something
-    of their own, and what lands in the field is theirs, not ours. A caption
-    field that receives a password does not keep it private — a draft editor
-    saves what it holds. Reading the control back catches the wrong text, but
-    only after the editor has already seen it.
+    The clipboard is global: between writing our text and pressing the paste
+    key, the person at the keyboard or another agent can copy something of
+    their own, and what lands in the field would be theirs. A caption field
+    that receives a password does not keep it private, because a draft editor
+    saves what it holds.
 
-    The window is narrowed by confirming the clipboard still holds our text
-    immediately before the key, and the previous text is put back afterwards.
-    Narrowed is not closed, and clipboard contents that are not text cannot be
-    put back at all.
+    So the clipboard is re-read immediately before the key and the paste is
+    abandoned if it is no longer ours, which leaves a window of microseconds
+    rather than the half-second the write-then-press sequence used to span,
+    and the caller reads the control back afterwards either way. The previous
+    text is restored only when the clipboard still holds ours, so a copy made
+    while we worked is never overwritten. Clipboard contents that are not text
+    still cannot be preserved.
 
     Returns True when the paste key was pressed.
     """
     previous = read_clipboard()
     if not write_clipboard(text):
         return False
+    pressed = False
     try:
         await page.wait_for_timeout(rng.randint(120, 320))
         if read_clipboard() != text:
@@ -259,11 +261,15 @@ async def paste(page, text, rng=random):
             # paste key now would put their content into this field.
             return False
         await page.keyboard.press(PASTE_KEY)
+        pressed = True
         await page.wait_for_timeout(PASTE_READ_MS)
     finally:
-        if previous is not None:
+        # Put the old text back, but never over someone else's newer copy: if
+        # the clipboard no longer holds ours, a person or another process
+        # wrote to it while we worked, and theirs is the one that matters.
+        if previous is not None and read_clipboard() == text:
             write_clipboard(previous)
-    return True
+    return pressed
 
 
 def segments(text):
@@ -299,18 +305,20 @@ async def type_segments(page, text, rng=random):
             await page.wait_for_timeout(rng.randint(180, 520))
 
 
-async def enter_text(page, locator, text, rng=random, read_back=None, allow_clipboard=False):
+async def enter_text(page, locator, text, rng=random, read_back=None, allow_clipboard=True):
     """Put text into a control the way a person would, and say which way that was.
 
-    The default never touches the system clipboard, because the clipboard is
-    shared with the person at the machine and with every other agent on it.
-    Text is typed, and the parts a keyboard cannot produce are inserted the
-    way an emoji picker inserts them.
+    Nobody composes a caption in the upload form. They write it beforehand and
+    paste it, and the upload form sees a paste. So text that a person would
+    not retype from memory — anything long, multi-line, or outside ASCII — is
+    pasted through the system clipboard, which is the only way to produce the
+    paste event a browser raises for a person. Short single-line ASCII, a
+    title or a link, is typed.
 
-    `allow_clipboard` opts into a real paste event, which is a closer
-    imitation of a person for a long caption but races everyone else for a
-    global resource; see `paste`. Only pass it when nothing else is using this
-    machine.
+    `allow_clipboard=False` forces typing for a caller that must not touch the
+    clipboard at all. The clipboard is global, so `paste` re-reads it
+    immediately before the key and abandons the paste if it is no longer ours,
+    and restores the previous text only if nobody else has written since.
 
     `read_back` is an async callable returning what the control now holds.
     It is what makes the clipboard path recoverable: a browser without access
