@@ -37,11 +37,34 @@ import random
 import subprocess
 import sys
 
-# Timing drawn from the measurements above; the spread matters more than the
-# centre, because a constant interval is the thing that reads as automation.
-KEY_INTERVAL_MS = (105, 38)      # mean, standard deviation
+# A hand does not hold an interval. It produces a tight cluster of fast
+# strokes with a long tail to the right, so the base is log-normal rather than
+# the symmetric distribution this module started with: exp(4.75) is a 115 ms
+# median, and the tail reaches past 230 ms without anything special happening.
+KEY_LOGNORM = (4.75, 0.42)       # mu, sigma of ln(milliseconds)
 KEY_MINIMUM_MS = 28
-WORD_BREAK_MS = (10, 60)         # extra pause after a space
+KEY_CEILING_MS = 900             # above this it is a pause, not a keystroke
+WORD_BREAK_MS = (25, 110)        # a space ends a word and the hand regroups
+SENTENCE_BREAK_MS = (220, 650)   # after . ! ? the eye goes to what comes next
+LINE_BREAK_MS = (300, 900)       # a new line is a new thought
+SHIFT_MS = (20, 70)              # a capital or a symbol costs a second finger
+WORD_TEMPO = (0.82, 1.28)        # each word is typed at its own tempo
+THINK_CHANCE = 0.035             # per character: a pause with nothing behind it
+THINK_MS = (420, 1500)
+TYPO_CHANCE = 0.014              # per letter: struck a neighbour, noticed, fixed
+TYPO_NOTICE_MS = (110, 360)      # how long the wrong letter stands before Backspace
+TYPO_RECOVER_MS = (90, 240)      # and the pause after erasing it
+
+# Neighbours on a QWERTY keyboard: a slip lands next to the intended key, not
+# on a random letter.
+_NEIGHBOURS = {
+    "a": "qwsz", "b": "vghn", "c": "xdfv", "d": "serfcx", "e": "wsdr",
+    "f": "drtgvc", "g": "ftyhbv", "h": "gyujnb", "i": "ujko", "j": "huikmn",
+    "k": "jiolm", "l": "kop", "m": "njk", "n": "bhjm", "o": "iklp",
+    "p": "ol", "q": "wa", "r": "edft", "s": "awedxz", "t": "rfgy",
+    "u": "yhji", "v": "cfgb", "w": "qase", "x": "zsdc", "y": "tghu",
+    "z": "asx",
+}
 MOVE_STEPS = (22, 34)
 MOVE_STEP_MS = (6, 18)
 PRESS_MS = (55, 130)
@@ -92,21 +115,77 @@ async def click(page, locator, rng=random):
     await page.mouse.up()
 
 
+def _shifted(character):
+    return character.isupper() or character in "~!@#$%^&*()_+{}|:\"<>?"
+
+
 def intervals(text, rng=random):
-    """The pause before each character, in milliseconds."""
+    """The pause before each character, in milliseconds.
+
+    The shape matters more than the centre. A constant interval is what reads
+    as a machine, and so does a symmetric one: real intervals pile up near the
+    median and trail off to the right, and they are interrupted by pauses that
+    belong to the sentence rather than to the keys — after a full stop, at a
+    line break, and now and then for no visible reason at all.
+    """
     values = []
+    tempo = rng.uniform(*WORD_TEMPO)
+    previous = ""
     for character in text:
-        delay = rng.gauss(*KEY_INTERVAL_MS)
+        delay = min(KEY_CEILING_MS, rng.lognormvariate(*KEY_LOGNORM)) * tempo
+        if _shifted(character):
+            delay += rng.randint(*SHIFT_MS)
         if character == " ":
             delay += rng.randint(*WORD_BREAK_MS)
+            tempo = rng.uniform(*WORD_TEMPO)   # the next word has its own pace
+        if character == "\n":
+            delay += rng.randint(*LINE_BREAK_MS)
+        if previous in ".!?" and character == " ":
+            delay += rng.randint(*SENTENCE_BREAK_MS)
+        if rng.random() < THINK_CHANCE:
+            delay += rng.randint(*THINK_MS)
         values.append(max(KEY_MINIMUM_MS, int(delay)))
+        previous = character
     return values
 
 
-async def type_text(page, text, rng=random):
-    """Type one character at a time, at a pace that varies the way a hand does."""
+def plan(text, rng=random):
+    """Keystrokes to perform, as (key, pause_after_ms) pairs.
+
+    Some of them are wrong. A person typing a long caption strikes a
+    neighbouring key now and then, sees it, and takes it back, and the trace
+    of that — a letter, a pause, a Backspace — is the hardest thing for a
+    machine to fake by accident. The slips never land inside a hashtag or a
+    mention, because a half-typed tag opens a suggestion list and the
+    correction would then be fighting the platform's own UI.
+    """
+    steps, hot = [], False
     for character, delay in zip(text, intervals(text, rng)):
-        await page.keyboard.type(character)
+        if character in "#@":
+            hot = True
+        elif character.isspace():
+            hot = False
+        slip = (not hot and character.isalpha() and character.lower() in _NEIGHBOURS
+                and rng.random() < TYPO_CHANCE)
+        if slip:
+            wrong = rng.choice(_NEIGHBOURS[character.lower()])
+            steps.append((wrong.upper() if character.isupper() else wrong,
+                          rng.randint(*TYPO_NOTICE_MS)))
+            steps.append(("\b", rng.randint(*TYPO_RECOVER_MS)))
+        steps.append((character, delay))
+    return steps
+
+
+async def type_text(page, text, rng=random):
+    """Type one character at a time, at a pace that varies the way a hand does.
+
+    Including the occasional wrong key, taken back immediately; see `plan`.
+    """
+    for key, delay in plan(text, rng):
+        if key == "\b":
+            await page.keyboard.press("Backspace")
+        else:
+            await page.keyboard.type(key)
         await page.wait_for_timeout(delay)
 
 
