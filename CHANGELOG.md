@@ -10,7 +10,7 @@ All notable changes to this project are documented here. The format follows Keep
 
 ### Added
 
-- `human` module for input that leaves the trace a person leaves: an eased approach to a control, a pause before pressing, typing with a varying interval, insertion for what a keyboard cannot produce, and a real clipboard paste behind an opt-in that is off by default. Kept in step with the copies in the other publishers, which are standalone repositories sharing no package. The measurements behind it are in `docs-site/@docs/guides/what-a-page-sees-when-we-type.md`.
+- `human` module for input that leaves the trace a person leaves: an eased approach to a control, a pause before pressing, typing with a varying interval, insertion for what a keyboard cannot produce, and a real clipboard paste. The paste is the default for text a person would not retype from memory (long, multi-line or outside ASCII), because nobody composes a caption in an upload form; short single-line ASCII is typed. `allow_clipboard=False` turns the paste off. The clipboard is global, so it is re-read immediately before the paste key and the paste is abandoned if it is no longer ours. Kept in step with the copies in the other publishers, which are standalone repositories sharing no package. The measurements behind it are in `docs-site/@docs/guides/what-a-page-sees-when-we-type.md`.
 - Test that fails the build if any module in the package dispatches a browser event or puts text in without keystrokes through `execCommand`, `fill`, `insert_text` or `press_sequentially`.
 
 ## [0.2.1] - 2026-10-08
