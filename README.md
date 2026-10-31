@@ -4,11 +4,11 @@
 
 **Status:** the [Key West Reel](https://www.instagram.com/reel/DeNTjGsu_d6/) was published through one CLI Share on 2026-10-08, using the original 1080×1920 MP4, exact metadata caption, custom cover, Public account and AI label. Its successful `configure_to_clips` response identified the new shortcode with the matching author/caption/video object. The request was reconciled after inspecting that exact video and fixing verification of Instagram's new Reels viewer redirect and nested caption author. Journal status is `published`; no second Share occurred. A fresh cookie-free Camoufox also verified the exact author/caption and playable vertical video. Photo/carousel live preparation, default browser fetch/cache and target Linux acceptance remain unverified.
 
-Version `0.2.1` is defined in `pyproject.toml`. Changes are recorded in `CHANGELOG.md`. The reviewed [Instagram plan](https://gitlab.com/reforms-lab/root/-/blob/main/docs/publishing/instagram.md) and [shared publishing contract](https://gitlab.com/reforms-lab/root/-/blob/main/docs/publishing/contract.md) define release gates.
+Version `0.2.1` is defined in `pyproject.toml`. Changes are recorded in `CHANGELOG.md`. The reviewed Instagram plan and shared publishing contract define release gates.
 
 ## Installation and login
 
-Requires Python 3.12/3.13, [uv](https://docs.astral.sh/uv/getting-started/installation/), access to the private metadata dependency, and ffmpeg (`ffprobe`) for Reels.
+Requires Python 3.12/3.13, [uv](https://docs.astral.sh/uv/getting-started/installation/), the pinned [metadata-automation](https://github.com/suenot/metadata-automation) dependency, and ffmpeg (`ffprobe`) for Reels.
 
 ```sh
 # macOS
